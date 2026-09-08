@@ -46,13 +46,16 @@
 
   function renderRobotHeader(container) {
     container.querySelector('#robotName').textContent = STATE.robotName;
+    const desc = container.querySelector('#robotDescription');
+    if (desc) desc.textContent = STATE.robotDescription || '';
   }
 
   function render(container) {
     container.innerHTML =
       '<div class="d-flex justify-content-between align-items-center mb-3">' +
       '<div><h4 class="mb-1">Robot Configuration</h4>' +
-      '<span class="text-muted">Robot: <strong id="robotName"></strong></span></div>' +
+      '<span class="text-muted">Robot: <strong id="robotName"></strong></span>' +
+      '<div class="text-muted small" id="robotDescription"></div></div>' +
       '<div>' +
       '<button class="btn btn-outline-secondary me-2" data-act="renameRobot">' +
       '<i class="bi bi-pencil-square me-1"></i>Rename robot</button>' +
@@ -204,6 +207,12 @@
     document.body.appendChild(el);
     const modal = new bootstrap.Modal(el);
     const confirmBtn = el.querySelector('.btn-confirm');
+    // Remove the modal from the DOM once hidden so duplicate element ids from
+    // repeated opens (e.g. robot create then edit, both with #rbName/#rbDesc)
+    // never linger and confuse later modal-body queries.
+    el.addEventListener('hidden.bs.modal', () => {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    });
     confirmBtn.addEventListener('click', async () => {
       confirmBtn.disabled = true;
       try {
@@ -228,6 +237,7 @@
     return esc(s);
   }
   global.esc = esc;
+  global.escAttr = escAttr;
 
   global.ConfigurationView = {
     key: VIEW,

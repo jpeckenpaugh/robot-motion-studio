@@ -9,7 +9,9 @@
     window.ConfigurationView,
     window.PosesView,
     window.SequencesView,
+    window.TimelineView,
     window.PreviewView,
+    window.SimulatorView,
     window.ExportView,
   ];
   let activeKey = 'configuration';
@@ -49,16 +51,24 @@
       if (btn) switchView(btn.getAttribute('data-view'));
     });
 
-    // Re-render the active view whenever the backend state refreshes.
+    // Re-render the active view whenever the backend state refreshes, and keep
+    // the always-visible current-robot indicators in sync.
     StateController.onRefresh(() => {
+      document.getElementById('brandName').textContent = STATE.robotName || 'No robot';
+      if (window.RobotsController) window.RobotsController.updateLabel();
       if (rootEl) renderActive();
     });
 
-    // Cross-view trigger: when the sequences view selects a sequence, the
-    // preview view should show the same one if active.
+    // Robot collection switcher (brief 01): always visible in the navbar.
+    if (window.RobotsController) {
+      const slot = document.getElementById('robotSwitcher');
+      if (slot) window.RobotsController.mount(slot);
+    }
+
     try {
       await StateController.refresh();
       document.getElementById('brandName').textContent = STATE.robotName;
+      renderNav();      // v0.1 only rendered nav on switch; render it on load too
       renderActive();
     } catch (err) {
       rootEl.innerHTML =
