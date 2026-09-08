@@ -64,9 +64,101 @@ let seededRobotId;
 check('seed creates the door durability rig', () => {
   seededRobotId = reset();
   const robots = handlers.listRobots();
-  assert.strictEqual(robots.length, 1);
+  assert.strictEqual(robots.length, 5);
   assert.strictEqual(robots[0].name, 'DoorDurabilityRig');
   assert.strictEqual(robots[0].current, true);
+});
+check('demo robots seeded (PickPlaceArm, QuadTrotter, BipedWalker, GimbalCam)', () => {
+  const names = handlers.listRobots().map((r) => r.name);
+  assert.deepStrictEqual(names,
+    ['DoorDurabilityRig', 'PickPlaceArm', 'QuadTrotter', 'BipedWalker', 'GimbalCam']);
+});
+check('demo robots carry sim_config', () => {
+  const robots = handlers.listRobots();
+  for (const r of robots) {
+    const full = handlers.getRobot(r.id);
+    assert.ok(full.sim_config, `${r.name} has sim_config`);
+    assert.ok(Array.isArray(full.sim_config.joints), `${r.name} joints array`);
+  }
+});
+check('PickPlaceArm: 6 servos, poses, pick_and_place with group', () => {
+  const robots = handlers.listRobots();
+  const arm = robots.find((r) => r.name === 'PickPlaceArm');
+  const full = handlers.getRobot(arm.id);
+  assert.strictEqual(full.servos.length, 6);
+  assert.strictEqual(full.servos.map((s) => s.name).join(','),
+    'base_rotate,shoulder,elbow,wrist_pitch,wrist_roll,gripper');
+  const seqs = handlers.listSequences(arm.id);
+  assert.strictEqual(seqs.length, 1);
+  const seq = handlers.getSequence(seqs[0].id);
+  assert.strictEqual(seq.name, 'pick_and_place');
+  assert.strictEqual(seq.repeat_count, 2);
+  assert.strictEqual(seq.groups.length, 1);
+  assert.strictEqual(seq.groups[0].name, 'grip_cycle');
+  assert.strictEqual(seq.groups[0].repeat_count, 3);
+  // preview resolves and group repeat is folded in
+  const p = handlers.previewSequence(seq.id);
+  assert.strictEqual(p.steps.length, 6);
+  assert.strictEqual(p.groups[0].step_orders.join(','), '1,2,3,4');
+});
+check('QuadTrotter: 8 servos, trot_gait + crouch_and_stand', () => {
+  const robots = handlers.listRobots();
+  const quad = robots.find((r) => r.name === 'QuadTrotter');
+  assert.strictEqual(handlers.getRobot(quad.id).servos.length, 8);
+  const seqs = handlers.listSequences(quad.id);
+  assert.deepStrictEqual(seqs.map((s) => s.name).sort(), ['crouch_and_stand', 'trot_gait']);
+  const trot = handlers.getSequence(seqs.find((s) => s.name === 'trot_gait').id);
+  assert.strictEqual(trot.repeat_count, 3);
+});
+check('BipedWalker: 6 servos, walk_step with step_pair group', () => {
+  const robots = handlers.listRobots();
+  const biped = robots.find((r) => r.name === 'BipedWalker');
+  assert.strictEqual(handlers.getRobot(biped.id).servos.length, 6);
+  const walk = handlers.getSequence(handlers.listSequences(biped.id).find((s) => s.name === 'walk_step').id);
+  assert.strictEqual(walk.groups.length, 1);
+  assert.strictEqual(walk.groups[0].name, 'step_pair');
+  assert.strictEqual(walk.groups[0].repeat_count, 2);
+});
+check('GimbalCam: 2 servos, patrol_scan repeat_forever', () => {
+  const robots = handlers.listRobots();
+  const gimbal = robots.find((r) => r.name === 'GimbalCam');
+  assert.strictEqual(handlers.getRobot(gimbal.id).servos.length, 2);
+  const patrol = handlers.getSequence(handlers.listSequences(gimbal.id).find((s) => s.name === 'patrol_scan').id);
+  assert.strictEqual(patrol.repeat_forever, true);
+  assert.strictEqual(patrol.repeat_count, null);
+  const p = handlers.previewSequence(patrol.id);
+  assert.strictEqual(p.repeat_forever, true);
+  assert.strictEqual(p.total_duration_ms, null);
+});
+check('every pose target angle is within its servo limits', () => {
+  const robots = handlers.listRobots();
+  for (const r of robots) {
+    const full = handlers.getRobot(r.id);
+    const limits = {};
+    full.servos.forEach((s) => { limits[s.id] = [s.angle_min, s.angle_max]; });
+    for (const pose of handlers.listPoses(r.id)) {
+      for (const t of pose.targets) {
+        const [amin, amax] = limits[t.servo_id];
+        assert.ok(amin <= t.angle && t.angle <= amax,
+          `${r.name}/${pose.name} target ${t.angle} within [${amin},${amax}]`);
+      }
+    }
+  }
+});
+check('every demo step references a pose/servo on the same robot', () => {
+  const robots = handlers.listRobots();
+  for (const r of robots) {
+    for (const seq of handlers.listSequences(r.id)) {
+      const full = handlers.getSequence(seq.id);
+      const fullRobot = handlers.getRobot(r.id);
+      const poseIds = new Set(handlers.listPoses(r.id).map((p) => p.id));
+      const servoIds = new Set(fullRobot.servos.map((s) => s.id));
+      for (const step of full.steps) {
+        if (step.kind === 'pose') assert.ok(poseIds.has(step.pose_id), 'pose ref');
+        else assert.ok(servoIds.has(step.servo_id), 'servo ref');
+      }
+    }
+  }
 });
 check('seed rig has 4 servos (shoulder/elbow/wrist/gripper)', () => {
   const servos = handlers.listServos(seededRobotId);
@@ -145,7 +237,7 @@ check('create robot, then switch current', () => {
   const r = handlers.createRobot({ name: 'TestBot', description: 'd' });
   assert.strictEqual(r.name, 'TestBot');
   const robots = handlers.listRobots();
-  assert.strictEqual(robots.length, 2);
+  assert.strictEqual(robots.length, 6); // 5 seeded + TestBot
   handlers.setCurrentRobot({ robot_id: r.id });
   assert.strictEqual(handlers.getCurrentRobot().robot_id, r.id);
   handlers.setCurrentRobot({ robot_id: seededRobotId });
@@ -235,14 +327,14 @@ check('reorder requires exactly the sequence steps', () => {
 
 console.log('\n[persistence parity]');
 check('fresh seed is stable across DB round-trip', () => {
-  reset(); // back to the pristine single-robot seed state
+  reset(); // back to the pristine seed state
   const bytes = db.export();
   const clone = new SQL.Database(bytes);
   clone.run('PRAGMA foreign_keys = ON;');
   validateDatabase(clone);
   setDatabase(clone);
   const robots = handlers.listRobots();
-  assert.strictEqual(robots.length, 1);
+  assert.strictEqual(robots.length, 5);
   assert.strictEqual(robots[0].name, 'DoorDurabilityRig');
   setDatabase(db);
 });

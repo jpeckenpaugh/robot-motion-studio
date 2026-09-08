@@ -88,17 +88,31 @@ Errors use the same shape and codes as the server edition:
 
 ## Seed parity
 
-First launch seeds exactly the server edition's rig: the wall-mounted
-Door Durability Rig (shoulder/elbow/wrist/gripper, pins 2–5), its 5 named
+First launch seeds the same content as the server edition: the wall-mounted
+**Door Durability Rig** (shoulder/elbow/wrist/gripper, pins 2–5), its 5 named
 poses, the `door_cycle` sequence (25x group repeat) and `grip_and_release`
-(5x sequence repeat), and its `sim_config`. Seeded once; behaves like ordinary
-user data afterward.
+(5x sequence repeat), and its `sim_config` — plus **four demo robots** with
+full metadata:
+
+- **PickPlaceArm** — 6-DOF articulated arm (base/shoulder/elbow/wrist pitch/
+  wrist roll/gripper), 7 poses, `pick_and_place` (2x sequence repeat + a 3x
+  `grip_cycle` step group).
+- **QuadTrotter** — quadruped with hip+knee per leg (8 servos), 4 poses,
+  `trot_gait` (3x) and `crouch_and_stand` (2x).
+- **BipedWalker** — biped with hip/knee/ankle per leg (6 servos), 7 poses,
+  `walk_step` (with a `step_pair` group) and `crouch_lunge`.
+- **GimbalCam** — minimal pan/tilt gimbal (2 servos), 5 poses,
+  `patrol_scan` (**repeat_forever**) and `look_around` (2x).
+
+All angles respect each servo's limits, all speeds are pre-derived consistent
+with each step's travel, and all group memberships are contiguous. Seeded once;
+behaves like ordinary user data afterward.
 
 ## Verified parity
 
-- `tests/run.mjs` — 18 Node parity checks: schema, seed, preview timing/repeat,
-  export schema v2 + filenames, CRUD, guards, group-split, speed mismatch,
-  reorder validation, DB round-trip.
+- `tests/run.mjs` — 26 Node parity checks: schema, seed (door rig + 4 demo
+  robots), preview timing/repeat, export schema v2 + filenames, CRUD, guards,
+  group-split, speed mismatch, reorder validation, DB round-trip.
 - `tests/headless.mjs` — end-to-end smoke in Chrome: boot/seed, worker-backed
   API, mutation, 409 error shape, workspace status.
 - `tests/reload.mjs` — OPFS persistence across a hard reload.

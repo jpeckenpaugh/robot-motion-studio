@@ -88,7 +88,7 @@ for (let i = 0; i < 100; i++) {
   const st = await evaluate(sess, `(async()=>{ try{ const robots=await window.API.get('/robots'); const cur=await window.API.get('/state/current-robot'); return {count:robots.length,names:robots.map(r=>r.name),current:cur.robot?cur.robot.name:null}; }catch(e){ return {err:e.message}; } })()`);
   if (st && (st.count || st.err)) {
     console.log('after reload:', JSON.stringify(st));
-    if (st.count === 2 && st.names.includes('PersistTest') && st.current === 'PersistTest') ok = true;
+    if (st.count === 6 && st.names.includes('PersistTest') && st.current === 'PersistTest') ok = true;
     break;
   }
   await sleep(200);

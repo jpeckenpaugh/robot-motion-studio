@@ -34,11 +34,14 @@ real-time robot control.
   locally). No build toolchain. Simulation is a dependency-free browser Canvas
   renderer.
 - **Persistence:** SQLite database at `data/app.db`. Fresh (first-run)
-  databases seed the door-durability-tester rig — one robot (`DoorDurabilityRig`,
-  4 servos: shoulder/elbow/wrist/gripper), five poses, and two example
-  sequences. (v0.1 seeded a sample robot with six servos, four poses, and two
-  example sequences; upgraded v0.1 databases keep their existing data and are
-  never re-seeded.)
+  databases seed the door-durability-tester rig — `DoorDurabilityRig`
+  (4 servos: shoulder/elbow/wrist/gripper), five poses, and two example
+  sequences — plus four full demo robots: `PickPlaceArm` (6-DOF arm),
+  `QuadTrotter` (quadruped), `BipedWalker` (biped), and `GimbalCam`
+  (pan/tilt), each with servos, poses, and example sequences (including
+  step-group and forever-loop demos). (v0.1 seeded a sample robot with six
+  servos, four poses, and two example sequences; upgraded v0.1 databases keep
+  their existing data and are never re-seeded.)
 
 ## Project structure
 

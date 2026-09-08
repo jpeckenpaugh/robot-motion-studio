@@ -99,7 +99,7 @@ const apiResult = await evaluate(wsUrl, `(async () => {
   };
 })()`);
 console.log('API through worker:', JSON.stringify(apiResult));
-assert.strictEqual(apiResult.robotCount, 1);
+assert.strictEqual(apiResult.robotCount, 5);
 assert.strictEqual(apiResult.firstRobot, 'DoorDurabilityRig');
 assert.strictEqual(apiResult.current, true);
 assert.ok(apiResult.seqCount >= 2);
@@ -118,7 +118,7 @@ const mut = await evaluate(wsUrl, `(async () => {
 })()`);
 console.log('mutation through worker:', JSON.stringify(mut));
 assert.strictEqual(mut.created, 'HeadlessBot');
-assert.strictEqual(mut.remaining, 1);
+assert.strictEqual(mut.remaining, 5); // 5 seeded robots remain after delete
 
 // Error shape parity: 409 on referenced servo delete.
 const errShape = await evaluate(wsUrl, `(async () => {
