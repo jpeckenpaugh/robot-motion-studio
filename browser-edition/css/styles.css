@@ -1,0 +1,165 @@
+body {
+  background-color: #f8f9fa;
+}
+
+.navbar-brand {
+  font-weight: 600;
+}
+
+#app .card {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.list-group-item {
+  cursor: pointer;
+}
+
+.list-group-item:not([data-act]) {
+  cursor: default;
+}
+
+.table th {
+  white-space: nowrap;
+}
+
+/* ---- Visual timeline editor (brief 03) ---- */
+
+.tl-scroll {
+  overflow-x: auto;
+  border: 1px solid #dee2e6;
+  border-radius: 0.375rem;
+  background: #fff;
+}
+
+.tl-track {
+  position: relative;
+  background:
+    repeating-linear-gradient(90deg, #f8f9fa 0 1px, transparent 1px 10%);
+  border-top: 1px solid #dee2e6;
+}
+
+.tl-step {
+  position: absolute;
+  top: 8px;
+  height: 58px;
+  border-radius: 0.375rem;
+  background: #e9ecef;
+  border: 1px solid #ced4da;
+  overflow: hidden;
+}
+
+.tl-step-body {
+  position: absolute;
+  inset: 0;
+  padding: 4px 6px;
+}
+
+.tl-step-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-step-meta {
+  font-size: 0.68rem;
+  color: #6c757d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-step-move {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 5px;
+  background: #0d6efd;
+  border-radius: 0 2px 0 0;
+  max-width: 100%;
+}
+
+.tl-step-actions {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  display: none;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.85);
+  border-radius: 4px;
+  padding: 1px;
+}
+
+.tl-step:hover .tl-step-actions {
+  display: flex;
+}
+
+.tl-step-actions .btn {
+  padding: 0 0.3rem;
+  font-size: 0.7rem;
+  line-height: 1.1;
+}
+
+.tl-ruler {
+  position: relative;
+  height: 22px;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.tl-ruler-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 0.66rem;
+  color: #6c757d;
+}
+
+.tl-ruler-tick i {
+  display: block;
+  width: 1px;
+  height: 6px;
+  margin: 0 auto;
+  background: #adb5bd;
+}
+
+.tl-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #dc3545;
+  z-index: 5;
+  cursor: ew-resize;
+}
+
+.tl-playhead::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -4px;
+  width: 10px;
+  height: 10px;
+  background: #dc3545;
+  border-radius: 50%;
+}
+
+.group-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+
+/* ---- Simulator (brief 05) ---- */
+
+.sim-canvas {
+  width: 100%;
+  height: 420px;
+  border: 1px solid #dee2e6;
+  border-radius: 0.375rem;
+  background: #f8f9fa;
+  cursor: ew-resize;
+  display: block;
+}
