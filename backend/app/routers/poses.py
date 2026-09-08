@@ -1,13 +1,14 @@
-"""Poses + pose targets CRUD (brief 02; architecture §5.2).
+"""Poses + pose targets CRUD (brief 02; architecture §5.2, §9.3.2).
 
-Poses are created under the current robot (the POC's single robot). Targets
-reference servos by id; every target must exist on the robot and stay within
-that servo's angle limits.
+Poses are scoped to a robot: list/create operate on the currently selected
+robot by default and accept an optional ?robot_id= for explicit scoping.
+Targets reference servos by id; every target must exist on the pose's robot
+and stay within that servo's angle limits (cross-robot references rejected).
 """
 from __future__ import annotations
 
 import sqlite3
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Request, status
 
@@ -68,17 +69,22 @@ def _validate_targets(conn: sqlite3.Connection, robot_id: int, pose_id: int | No
 
 
 @router.get("/poses", response_model=List[dict])
-def list_poses(conn: sqlite3.Connection = Depends(get_db)):
-    rows = conn.execute("SELECT id FROM poses ORDER BY id").fetchall()
+def list_poses(robot_id: Optional[int] = None,
+               conn: sqlite3.Connection = Depends(get_db)):
+    rid = v.resolve_robot_id(conn, robot_id)
+    rows = conn.execute(
+        "SELECT id FROM poses WHERE robot_id = ? ORDER BY id", (rid,)
+    ).fetchall()
     return [_pose_to_dict(conn, r["id"]) for r in rows]
 
 
 @router.post("/poses", response_model=dict, status_code=status.HTTP_201_CREATED)
-def create_pose(body: PoseInput, conn: sqlite3.Connection = Depends(get_db)):
-    robot_id = v.current_robot_id(conn)
-    _validate_targets(conn, robot_id, None, body)
+def create_pose(body: PoseInput, robot_id: Optional[int] = None,
+                conn: sqlite3.Connection = Depends(get_db)):
+    rid = v.resolve_robot_id(conn, robot_id)
+    _validate_targets(conn, rid, None, body)
     cur = conn.execute(
-        "INSERT INTO poses (robot_id, name) VALUES (?, ?)", (robot_id, body.name)
+        "INSERT INTO poses (robot_id, name) VALUES (?, ?)", (rid, body.name)
     )
     pose_id = cur.lastrowid
     for t in body.targets:

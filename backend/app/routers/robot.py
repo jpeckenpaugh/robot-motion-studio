@@ -1,15 +1,20 @@
-"""Robots + servos CRUD (brief 01; architecture §5.1).
+"""Robots + servos CRUD and current-robot selection (brief 01; §5.1, §9.3.1).
 
-The POC has a single current robot (id=1). The robots table is kept for a
-future multi-robot model; all endpoints here are robot-scoped.
+The v0.1 single current robot is replaced by a persisted selection
+(app_state.current_robot_id). A robot is a plain, user-managed record in the
+collection; the door-rig seed is one such record. Servo endpoints are
+unchanged (v0.1) and robot-scoped.
 """
+from __future__ import annotations
+
+import json
 import sqlite3
 from typing import List
 
 from fastapi import APIRouter, Depends, Request, status
 
 from .. import validation as v
-from ..schemas import RobotRename, ServoInput
+from ..schemas import CurrentRobotSet, RobotCreate, RobotUpdate, ServoInput
 
 router = APIRouter(tags=["robots"])
 
@@ -31,34 +36,145 @@ def _servo_to_dict(row: sqlite3.Row) -> dict:
     }
 
 
-def _robot_to_dict(row: sqlite3.Row) -> dict:
-    return {"id": row["id"], "name": row["name"]}
+def _robot_row_to_dict(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"],
+    }
+
+
+def _sim_config_to_obj(raw) -> dict | None:
+    """Return the stored sim_config as a parsed JSON object (or None). The
+    backend stores/validates well-formed JSON only; it never interprets it."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+def _current_id(conn: sqlite3.Connection):
+    row = conn.execute(
+        "SELECT current_robot_id FROM app_state WHERE id = 1"
+    ).fetchone()
+    return row["current_robot_id"] if row is not None else None
+
+
+def _fetch_robot(conn: sqlite3.Connection, robot_id: int) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT id, name, description FROM robots WHERE id = ?", (robot_id,)
+    ).fetchone()
+    if row is None:
+        v.http_error(404, "NOT_FOUND", f"Robot {robot_id} not found")
+    return row
 
 
 @router.get("/robots", response_model=List[dict])
 def list_robots(conn: sqlite3.Connection = Depends(get_db)):
-    rows = conn.execute("SELECT id, name FROM robots ORDER BY id").fetchall()
-    return [_robot_to_dict(r) for r in rows]
+    current = _current_id(conn)
+    rows = conn.execute(
+        """SELECT r.id, r.name, r.description,
+                  (SELECT COUNT(*) FROM servos s WHERE s.robot_id = r.id)
+                      AS servo_count
+           FROM robots r ORDER BY r.id"""
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "description": r["description"],
+            "servo_count": r["servo_count"],
+            "current": (r["id"] == current),
+        }
+        for r in rows
+    ]
+
+
+@router.post("/robots", response_model=dict, status_code=status.HTTP_201_CREATED)
+def create_robot(body: RobotCreate, conn: sqlite3.Connection = Depends(get_db)):
+    name = v.require_name(body.name)
+    description = v.validate_description(body.description)
+    cur = conn.execute(
+        "INSERT INTO robots (name, description) VALUES (?, ?)",
+        (name, description),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, name, description FROM robots WHERE id = ?",
+        (cur.lastrowid,),
+    ).fetchone()
+    return _robot_row_to_dict(row)
 
 
 @router.get("/robots/{robot_id}", response_model=dict)
 def get_robot(robot_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    robot = v.fetch_robot_or_404(conn, robot_id)
+    robot = _fetch_robot(conn, robot_id)
     servos = conn.execute(
         "SELECT * FROM servos WHERE robot_id = ? ORDER BY id", (robot_id,)
     ).fetchall()
-    return {**_robot_to_dict(robot), "servos": [_servo_to_dict(s) for s in servos]}
+    row = conn.execute(
+        "SELECT sim_config FROM robots WHERE id = ?", (robot_id,)
+    ).fetchone()
+    return {
+        **_robot_row_to_dict(robot),
+        "sim_config": _sim_config_to_obj(row["sim_config"]),
+        "servos": [_servo_to_dict(s) for s in servos],
+    }
 
 
 @router.patch("/robots/{robot_id}", response_model=dict)
-def rename_robot(robot_id: int, body: RobotRename,
+def update_robot(robot_id: int, body: RobotUpdate,
                  conn: sqlite3.Connection = Depends(get_db)):
-    name = v.require_name(body.name)
-    v.fetch_robot_or_404(conn, robot_id)
-    conn.execute("UPDATE robots SET name = ? WHERE id = ?", (name, robot_id))
+    _fetch_robot(conn, robot_id)
+    sets = []
+    args = []
+    if body.name is not None:
+        sets.append("name = ?")
+        args.append(v.require_name(body.name))
+    if body.description is not None:
+        sets.append("description = ?")
+        args.append(v.validate_description(body.description))
+    args.append(robot_id)
+    conn.execute(f"UPDATE robots SET {', '.join(sets)} WHERE id = ?", args)
     conn.commit()
-    row = conn.execute("SELECT id, name FROM robots WHERE id = ?", (robot_id,)).fetchone()
-    return _robot_to_dict(row)
+    row = _fetch_robot(conn, robot_id)
+    return _robot_row_to_dict(row)
+
+
+@router.delete("/robots/{robot_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_robot(robot_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    _fetch_robot(conn, robot_id)
+    # FK ON DELETE CASCADE removes the robot's poses, sequences, steps, and
+    # step groups; app_state.current_robot_id becomes NULL (ON DELETE SET NULL).
+    conn.execute("DELETE FROM robots WHERE id = ?", (robot_id,))
+    conn.commit()
+
+
+@router.get("/state/current-robot", response_model=dict)
+def get_current_robot(conn: sqlite3.Connection = Depends(get_db)):
+    current = _current_id(conn)
+    robot = None
+    if current is not None:
+        row = conn.execute(
+            "SELECT id, name, description FROM robots WHERE id = ?", (current,)
+        ).fetchone()
+        if row is not None:
+            robot = _robot_row_to_dict(row)
+    return {"robot_id": current, "robot": robot}
+
+
+@router.put("/state/current-robot", response_model=dict)
+def set_current_robot(body: CurrentRobotSet,
+                      conn: sqlite3.Connection = Depends(get_db)):
+    v.fetch_robot_or_404(conn, body.robot_id)
+    conn.execute(
+        "UPDATE app_state SET current_robot_id = ? WHERE id = 1",
+        (body.robot_id,),
+    )
+    conn.commit()
+    return {"robot_id": body.robot_id}
 
 
 @router.get("/robots/{robot_id}/servos", response_model=List[dict])
