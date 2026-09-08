@@ -29,8 +29,14 @@ PORT="${PORT:-8000}"
 # if the entry point differs.
 APP="${APP:-app.main:app}"
 
+# Backend code lives under backend/ (docs/architecture.md §1). Add backend/ to
+# PYTHONPATH so the `app` package (backend/app) resolves as `app.main:app`.
+PYTHONPATH="${ROOT_DIR}/backend${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+
 echo "==> Starting backend (FastAPI/uvicorn) on http://${HOST}:${PORT}"
 echo "    Entry point : ${APP}"
+echo "    PYTHONPATH  : ${PYTHONPATH}"
 echo "    Frontend    : served statically by the backend (frontend/ dir)"
 
 exec "${VENV_DIR}/bin/uvicorn" "${APP}" --host "${HOST}" --port "${PORT}" --reload
