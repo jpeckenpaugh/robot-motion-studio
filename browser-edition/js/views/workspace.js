@@ -96,7 +96,7 @@
     });
 
     container.querySelector('#btnWsReset').addEventListener('click', async () => {
-      const ok = await UI.confirmDialog(
+      const ok = await UI.confirm(
         'Reset sample data?',
         'Re-seeds the Door Durability Rig only when the workspace has no robots. ' +
         'Your existing data is not touched.'
