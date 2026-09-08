@@ -1,1 +1,35 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# --- Local SQLite databases / data ---
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Temporary / scratch ---
+tmp/
+./tmp/
+
+# --- OS / editor artifacts ---
 .DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+
+# --- Tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
