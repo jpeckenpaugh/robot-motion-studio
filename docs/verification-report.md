@@ -214,3 +214,252 @@ would re-fetch the preview on view activation (out of scope for this stage).
 - No code was repaired, redesigned, or extended during this stage.
 - The SQLite database (`data/app.db`) was regenerated during the fresh-seed test
   and is left in the clean seeded state; `data/` is git-ignored.
+
+---
+
+# ENHANCEMENT PASS — Sprint 01 (multi-robot, timeline, timing, simulation)
+
+**Stage 8 — Verification Engineer (enhancement pass).**
+**Date:** 2026-09-08
+**Status:** 85 / 86 checks PASS, 1 FAIL (preview `speed_deg_per_s` not recomputed
+after a step mutation changes a step's resolved travel context).
+
+This section verifies the Sprint 01 enhancements against the approved
+specifications: `enhancements/scope.md`, `features/briefs/01..05.md`, and
+`docs/architecture.md` §9 (ENHANCEMENT). The v0.1 results above are preserved
+and unchanged. This pass added 86 new checks; **no v0.1 regression was found**
+(all v0.1 checks in the earlier sections still hold, and the targeted regression
+checks in section J re-confirm them).
+
+## Verification method (enhancement pass)
+
+- **Backend / API:** the app was run with `./install.sh` (reused `.venv`;
+  `fastapi==0.115.6`, `uvicorn[standard]==0.34.0`) and `./run.sh` (uvicorn on
+  `http://127.0.0.1:8000`). Every enhancement endpoint in architecture §9.3 was
+  exercised with `curl`; status codes, bodies, and headers were captured.
+  Fresh-DB seeding and seed-once behavior were tested on a separate instance
+  (port 8001) against a throwaway `DB_PATH`. Upgraded-v0.1 migration was tested
+  on a separate instance (port 8002) against a database built from the v0.1
+  schema (from git `5c317be:backend/app/db.py`) populated with sample data.
+  The default `data/app.db` was left in the clean seeded state.
+- **Frontend:** static review only of `frontend/index.html` and
+  `frontend/js/**`. **Browser interaction was NOT exercised by an automation
+  tool in this environment**; items labeled "(static)" are code-path findings.
+- **Database integrity:** direct SQLite queries for cascades, migration, seed
+  counts, and referential integrity.
+
+## Checklist derivation (enhancement pass)
+
+Each check traces to a specific requirement: `enhancements/scope.md` (items
+a–f), `features/briefs/01..05.md`, or `docs/architecture.md` §9 (schema §9.2,
+API §9.3, responsibilities §9.4, flow §9.5, `sim_config` §9.6, seed §9.7,
+migration §9.8). Regression checks trace to the "no regression" constraint
+(scope item f, brief 01 constraint, §9.9). The "Trace" column lists the source.
+
+---
+
+## A. Environment & startup
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| A1 | `install.sh` reuses `.venv` and pins the v0.1 deps (unchanged) | §9.9 "no environment changes"; Stage-4 `requirements.txt` | **PASS** | `./install.sh` → "Reusing existing virtual environment … Environment ready."; `fastapi==0.115.6`/`uvicorn[standard]==0.34.0` present |
+| A2 | `run.sh` starts the backend on `http://127.0.0.1:8000`; health 200 | arch §1, §9.9 | **PASS** | Server log "Uvicorn running on http://127.0.0.1:8000"; `GET /api/health` → `200 {"status":"ok"}` |
+| A3 | Static SPA served at `/` (non-`/api` routes) | arch §1, §4 | **PASS** | `GET /` → `200 text/html`, `<!DOCTYPE html>` |
+| A4 | All frontend assets served 200 (18 files incl. new timeline/simulator/robots views + motion.js) | arch §2 | **PASS** | All 18 `css/js/views/vendor` assets returned `200` |
+
+## B. Multi-robot management (brief 01; §9.3.1, §9.3.2)
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| B1 | `GET /api/robots` lists robots with `description`, `servo_count`, `current` flag | §9.3.1 | **PASS** | `[{"id":1,"name":"DoorDurabilityRig","description":"…","servo_count":4,"current":true}]` |
+| B2 | `POST /api/robots` creates a robot (201); does not change current selection | §9.3.1 | **PASS** | Created `ArmBot` (id 2) → `201`; `GET /robots` still `current:true` on id 1 |
+| B3 | `PATCH /api/robots/{id}` updates name/description (≥1 field) | §9.3.1 | **PASS** | `PATCH /robots/2 {"description":"updated arm"}` → `200` with updated description |
+| B4 | `GET /api/robots/{id}` returns full robot incl. `description`, `sim_config`, `servos[]` | §5.1.1, §9.2.1 | **PASS** | Door rig returned 4 servos + parsed `sim_config` (arm-chain) + description |
+| B5 | `PUT /api/state/current-robot` sets selection (200); unknown → 404 | §9.3.1 | **PASS** | `PUT {robot_id:2}` → `200 {"robot_id":2}`; `{robot_id:999}` → `404 NOT_FOUND` |
+| B6 | `GET /api/state/current-robot` returns `{robot_id, robot}` | §9.3.1 | **PASS** | `{"robot_id":2,"robot":{"id":2,"name":"ArmBot",…}}` |
+| B7 | Current selection is persisted in `app_state` (survives restart) | §9.5, §9.8 | **PASS** | `app_state.current_robot_id` persisted in DB; upgrade path sets it to lowest robot |
+| B8 | `?robot_id=` scoping on poses/sequences; omitted ⇒ current | §9.3.2 | **PASS** | current=2 → `[]`; `?robot_id=1` → door-rig poses; new robot-2 pose only visible under robot 2 |
+| B9 | Cross-robot reference rejected (422) | §9.3.2 "cross-robot integrity" | **PASS** | Pose on robot 2 referencing servo 1 (robot 1) → `422 {"detail":"servo_id 1 does not exist on this robot","code":"VALIDATION"}` |
+| B10 | `DELETE /api/robots/{id}` cascades poses/sequences/servos; current→NULL; no orphans | §9.3.1, §3 DDL | **PASS** | Deleted robot 2 → `204`; its servo/pose/sequence → `404`; SQL `0|0|0` orphans; `current-robot` → `{"robot_id":null}` |
+| B11 | `POST /api/robots` blank name → 422 | §9.3.1 "name non-empty" | **PASS** | `{"name":"  "}` → `422 {"code":"VALIDATION"}` |
+| B12 | `PATCH /api/robots/{id}` with no fields → 422 | §9.3.1 "≥1 field" | **PASS** | `PATCH {}` → `422 VALIDATION` ("Provide at least one of name or description") |
+
+## C. Seed rig — door durability tester (brief 02; §9.7)
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| C1 | Fresh DB seeds exactly one robot (the door rig), not empty | §9.7 "exactly one robot on first run" | **PASS** | Fresh DB (port 8001) → `GET /robots` → `[{"id":1,"name":"DoorDurabilityRig",…}]`; `app_state.seeded=1` |
+| C2 | Rig servo inventory = 4 servos (shoulder/pivot, elbow, wrist-twist, gripper) with complete valid calibration | §9.7, brief 02 | **PASS** | servos `shoulder, elbow, wrist, gripper`; each has all 8 fields; `angle_min<angle_max`; neutral within limits |
+| C3 | Rig ships named poses within the rig's servo limits | §9.7 | **PASS** | poses `rest, reach_handle, grip_handle, door_open, door_closed`; all targets within limits |
+| C4 | Rig ships example sequences using group/sequence repeat illustrating the door open/close cycle | §9.7 | **PASS** | `door_cycle` (4 steps, group `open_close_cycle` repeat 25) + `grip_and_release` (3 steps, sequence repeat 5) |
+| C5 | Rig ships a populated `sim_config` (arm-chain + wall/door/handle) | §9.2.1, §9.6 | **PASS** | `sim_config.kind="arm-chain"`, joints shoulder/elbow/wrist, gripper, environment wall/door/handle |
+| C6 | Seed behaves like normal user data (editable/deletable, not read-only) | §9.7 "normal, editable, deletable" | **PASS** | Deleted the rig via API → `204`; it is an ordinary record |
+| C7 | Seed-once: deleting the rig does NOT recreate it on restart | §9.7 "never re-seed after delete" | **PASS** | After deleting rig + restart (same DB) → `GET /robots` → `[]`; `seeded` stays 1 |
+| C8 | Upgraded v0.1 DB: existing data preserved, no re-seed | §9.7, §9.8 | **PASS** | v0.1 DB with `SampleBot` migrated to `seeded=1`, SampleBot + its poses/sequences intact (no rig added) |
+
+## D. Timeline editor (brief 03; §9.3.3)
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| D1 | Step insert at `position` (0-based), later steps renumbered | §9.3.3 | **PASS** | Inserted a servo step at position 1 → returned `position:1`; prior step shifted 1→2; positions contiguous |
+| D2 | `POST …/steps/{id}/duplicate` copies adjacent to original, carrying target/timing/speed/easing | §9.3.3 | **PASS** | Duplicated step 8 → new step `position:1` (adjacent), same `angle/duration/speed/easing` |
+| D3 | `POST …/reorder` persists the execution order | §5.3, §9.3 | **PASS** | Reorder accepted; order follows `step_ids`; group-split reorder rejected (F8) |
+| D4 | Play/pause/scrub timing-accurate via shared motion.js | brief 03, §9.5 | **PASS** (static) | `timeline.js` `wireScrub` maps track fraction → elapsed ms; `togglePlay` animates via `Motion.expand`; playhead position = `elapsed/playable * width` |
+
+## E. Advanced motion timing (brief 04; §9.2.2, §9.2.3, §9.2.4)
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| E1 | Per-step `easing` stored (enum linear/ease_in/ease_out/ease_in_out) | §9.2.3 | **PASS** | Seed steps carry `easing` values from the full set; DB `CHECK` present on fresh DB |
+| E2 | Invalid easing → 422 | §9.2.3 | **PASS** | `easing:"bogus"` → `422 VALIDATION` ("easing must be one of linear, ease_in, ease_out, ease_in_out") |
+| E3 | Only `duration_ms` given → speed derived from travel | §9.2.2 | **PASS** | servo 5 neutral 0→10 over 300ms → `speed:33.333333` (10/0.3) |
+| E4 | Only `speed` given → duration derived | §9.2.2 | **PASS** | servo 5 0→20 at 100 deg/s → stored `duration_ms:200`, `speed:100.0` |
+| E5 | Both given but inconsistent → 422 `SPEED_DURATION_MISMATCH` | §9.2.2 | **PASS** | `{"duration_ms":200,"speed":999}` → `422 {"code":"SPEED_DURATION_MISMATCH"}` |
+| E6 | Sequence `repeat_count`/`repeat_forever` saved and honored in preview | §9.2.4, §9.3.6 | **PASS** | `PUT repeat_count:2` → seq `repeat_count:2`; preview `pass_duration_ms:1400, total_duration_ms:2800` |
+| E7 | `repeat_count` + `repeat_forever` mutually exclusive → 422 | §9.2.4, §9.3.4 | **PASS** | `{"repeat_count":3,"repeat_forever":true}` → `422 VALIDATION` |
+| E8 | `repeat_count < 1` → 422 | §9.2.4 | **PASS** | `{"repeat_count":0}` → `422 VALIDATION` ("must be null … or >= 1") |
+| E9 | Stationary step (travel 0) → `speed` stored NULL | §9.2.2 | **PASS** | servo 5→20 then a second step 5→20 → second step `speed:null`, `duration_ms:500` kept |
+
+## F. Step groups (brief 04; §9.3.5)
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| F1 | `POST …/groups` creates a group over contiguous steps (201) | §9.3.5 | **PASS** | `{"name":"g1","step_ids":[8,11],"repeat_count":3}` → `201` with `step_ids` + repeat |
+| F2 | `GET …/groups/{id}` returns the group | §9.3.5 | **PASS** | `GET …/groups/2` → group object with `step_ids, repeat_count, repeat_forever` |
+| F3 | `PUT …/groups/{id}` updates name and/or repeat fields | §9.3.5 | **PASS** | `PUT {name, repeat_count:7}` → `200` `{"name":"renamed_g","repeat_count":7,…}` |
+| F4 | `DELETE …/groups/{id}` removes group; its steps remain | §9.3.5 | **PASS** | `DELETE …/groups/2` → `204`; steps still present; group gone |
+| F5 | Non-contiguous `step_ids` → 422 | §9.3.5 contiguity | **PASS** | Group over steps [A,C] with B between → `422 {"detail":"Group steps must be contiguous by position"}` |
+| F6 | Overlapping groups → 422 | §9.3.5 non-overlap | **PASS** | Group [B,C] after group [A,B] → `422 {"detail":"Group steps must not overlap another group's steps"}` |
+| F7 | `GROUP_SPLIT` guard: inserting a step between group members → 422 | §9.2.4, §9.3.5 | **PASS** | Insert at position 1 (between members) → `422 {"code":"GROUP_SPLIT"}` |
+| F8 | `GROUP_SPLIT` guard: reorder that splits a group → 422 | §9.2.4 | **PASS** | Reorder placing an outside step between group members → `422 {"code":"GROUP_SPLIT"}` |
+| F9 | Groups reflected in preview (`step_orders` + repeat) | §9.3.6 | **PASS** | `door_cycle` preview `groups:[{step_orders:[0,1,2,3],repeat_count:25}]`, `pass_duration_ms:127500` |
+
+## G. Preview — extended resolved motion source (briefs 03/04/05; §9.3.6)
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| G1 | Per-target `from_angle`/`from_pulse_us` carry-through of prior steps | §9.3.6 | **PASS** | `door_cycle` step 1 `shoulder from_angle:-30` (prev step end); `from_pulse_us` matches |
+| G2 | Per-step `start_ms`/`end_ms` absolute from pass start | §9.3.6 | **PASS** | `door_cycle` steps `0–800`, `1000–1400`, `1700–2900`, `3400–4600` (end=start+duration) |
+| G3 | Per-step `easing` + `speed_deg_per_s` present | §9.3.6 | **PASS** | Steps carry `easing` and `speed_deg_per_s` values |
+| G4 | Sequence-level `repeat_count`/`repeat_forever` + `groups[].step_orders` | §9.3.6 | **PASS** | Both seed sequences expose repeat fields; `door_cycle` group with `step_orders` |
+| G5 | `pass_duration_ms` and `total_duration_ms` computed (incl. group/sequence repeat) | §9.3.6 | **PASS** | `door_cycle` pass 127500 (5100×25); `grip_and_release` pass 1700, total 8500 (×5) |
+| G6 | First mover of a servo resolves `from_angle` to its `neutral_angle` | §9.3.6 | **PASS** | `door_cycle` step 0 shoulder `from_angle:0` (neutral 0), elbow `from_angle:45` (neutral 45) |
+| G7 | `speed_deg_per_s` is consistent with the step's resolved travel (no stale speed after a step mutation) | brief 04 "must not store a step with an incoherent speed/duration"; §9.2.2 | **FAIL** | See Failures. After inserting a step before an existing step, the earlier step's stored `speed` (and preview `speed_deg_per_s`) is not recomputed, so it no longer matches its new `from_angle→angle` travel. Concrete: demo seq step 3 (pose home) shows `from_angle:-20 → angle:0`, `duration_ms:500`, yet `speed_deg_per_s:20.0` (should be 40). Playback is unaffected (uses `duration_ms`), so this is a metadata/display inconsistency. |
+
+## H. Export v2 (briefs 01/04/05; §9.3.7)
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| H1 | `schema_version: 2`, `format:"robot-servo-sequence"` | §9.3.7 | **PASS** | Top-level `schema_version:2`, `format:"robot-servo-sequence"` |
+| H2 | Robot `description` included | §9.3.7 additive | **PASS** | `robot.description` present |
+| H3 | Per-step `easing` + `speed_deg_per_s` | §9.3.7 | **PASS** | Export steps carry `easing` and `speed_deg_per_s` |
+| H4 | Sequence `repeat_count`/`repeat_forever` | §9.3.7 | **PASS** | `grip_and_release` → `repeat_count:5, repeat_forever:false` |
+| H5 | Groups exported as `[{name, step_orders, repeat_count, repeat_forever}]` | §9.3.7 | **PASS** | `door_cycle` → `groups:[{name:"open_close_cycle",step_orders:[0,1,2,3],repeat_count:25,…}]` |
+| H6 | Export scoped to the selected robot; `?robot_id=` supported | §9.3.7 | **PASS** | Default export = current robot (DoorDurabilityRig); both endpoints accept `?robot_id` |
+| H7 | `Content-Disposition: attachment` | §5.5, §9.3.7 | **PASS** | Header `attachment; filename="DoorDurabilityRig.json"` |
+| H8 | Per-sequence export (same schema) | §5.5, §9.3.7 | **PASS** | `GET /sequences/2/export` → `attachment; filename="DoorDurabilityRig-grip_and_release.json"` |
+| H9 | v0.1 fields/shape preserved (pose refs resolved to `{servo_id,servo_name,angle,pulse_us}`, no app-only details) | §9.3.7 "unchanged", §5.5.2 | **PASS** | Export `steps[].targets` are flat resolved `{servo_id,servo_name,angle,pulse_us}`; no `pose_id`/`created_at` in steps |
+
+## I. Migration & seed-once (brief 02; §9.7, §9.8)
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| I1 | Upgraded v0.1 DB migrates idempotently (additive columns + new tables) | §9.8 | **PASS** | v0.1 DB gained `robots.description/sim_config`, `sequence_steps.speed/easing`, `sequences.repeat_*`, new `step_groups`, `step_group_members`, `app_state` |
+| I2 | Existing v0.1 data preserved on migration | §9.8 "existing user data never deleted" | **PASS** | `SampleBot` + its 2 servos/1 pose/1 seq/2 steps intact after migration |
+| I3 | Upgraded DB: `seeded=1`, `current_robot_id` = lowest robot | §9.8 | **PASS** | `app_state` → `1|1|1` (id 1, seeded 1, current 1) |
+| I4 | Derived speeds backfilled on existing steps | §9.8 backfill | **PASS** | Step 1 (arm 90→120, 500ms) → `speed:60.0`; step 2 (pose wave, head_pan 0→45, 400ms) → `speed:112.5` |
+| I5 | Migration is idempotent on re-run (no duplication) | §9.8 | **PASS** | Restarted app against same migrated DB → no error, counts unchanged `1|1|2`, no duplicate rows |
+| I6 | Fresh DB full DDL includes new CHECK constraints (easing, repeat) | §9.2, §9.8 | **PASS** | Fresh DB `sequence_steps` has `CHECK(easing IN (…))`; `sequences`/`step_groups` have repeat CHECKs |
+
+## J. Regression — v0.1 behavior preserved (constraint f; §9.9)
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| J1 | Pose management still works (create/list) | brief 01 constraint, §9.9 | **PASS** | `POST /poses` → `201`; `GET /poses` lists |
+| J2 | Read-only preview preserved (no write route) | §9.9, §5.4 | **PASS** | `POST /sequences/1/preview` → `405 Method Not Allowed`; only `GET` preview in OpenAPI |
+| J3 | Local persistence across restart (immediate, no save step) | scope item f, §9.5 | **PASS** | Door rig + 2 sequences persisted across main-server restart |
+| J4 | JSON export works (now extended to v2) | scope item f | **PASS** | `GET /api/export` → `200` attachment JSON (see H) |
+| J5 | Deletion guard: servo referenced by a pose → 409 `SERVO_REFERENCED` | §9.9 "deletion guards unchanged" | **PASS** | `DELETE /robots/1/servos/1` → `409 {"code":"SERVO_REFERENCED"}` |
+| J6 | Deletion guard: pose referenced by a step → 409 `POSE_REFERENCED` | §9.9 | **PASS** | `DELETE /poses/2` → `409 {"code":"POSE_REFERENCED"}` |
+| J7 | Unknown resource → 404 | §5 error semantics | **PASS** | `GET /sequences/999` → `404 NOT_FOUND` |
+
+## K. Frontend static review (briefs 01–05; §9.4, §9.5)
+
+Method: read-only inspection of `frontend/index.html` and `frontend/js/**` plus
+the OpenAPI route map. **Browser interaction was not exercised by an automation
+tool in this environment**; results below are static findings, not rendered
+browser behavior.
+
+| # | Check | Trace | Result | Evidence |
+|---|-------|-------|--------|----------|
+| K1 | Robot collection switcher in navbar: create/select/edit/delete; delete warns poses/sequences removed and requires confirm | §9.3.1, brief 01 | **PASS** (static) | `robots.js` `mount`/`renderMenu`/`onMenuClick`; `deleteRobot()` uses `UI.confirm("…also removes all of its poses and sequences…")`; create auto-selects (UX permitted) |
+| K2 | Current robot always visible and clearly identified | brief 01 | **PASS** (static) | `main.js` sets `brandName` = `STATE.robotName`; `robots.js` `updateLabel` + `current` badge in menu |
+| K3 | Switching robots reloads servos/poses/sequences/preview/simulator context | §9.5 | **PASS** (static) | `state.js` `setCurrentRobot` → `PUT /state/current-robot` + `refresh()` reloads robots, robot+servos, poses, sequences; `main.js` `onRefresh` re-renders active view |
+| K4 | Visual timeline editor: step extents reflect duration+hold; add/reorder/edit/remove/duplicate; play/pause/scrub | brief 03 | **PASS** (static) | `timeline.js`: `left/width` from `seg.start/(end-start)`; actions left/right/dup/edit/remove; `wireScrub` drag; `togglePlay` |
+| K5 | Per-step speed+easing controls; whole-sequence and step-group loop controls | brief 04 | **PASS** (static) | `timeline.js` `openStepModal` has duration+speed+easing inputs; `saveRepeat` (seq), `openGroupModal` (group) |
+| K6 | Shared `motion.js` used by BOTH timeline and simulator (canonical easing/loop math) | §9.4 "cannot diverge" | **PASS** (static) | `timeline.js` `rebuildSegments` and `simulator.js` both call `Motion.expand`; easing curves in `motion.js` match §9.2.3 exactly |
+| K7 | Simulator renders arm chain + wall/door/handle from `sim_config`; read-only (no edit) | brief 05, §9.4 | **PASS** (static) | `simulator.js` `buildChain`/`drawEnvironment`/`drawArm`; `SimulatorView` fetches `/preview` on render and exposes only play/reset/scrub; no sequence writes |
+| K8 | Preview re-fetches on every render (v0.1 I11 fixed — no stale preview) | brief 04 "no stale data", §9.5 | **PASS** (static) | `preview.js` `ensureFresh()` re-fetches `/preview` on `render()` and after list selection; comment documents the v0.1 fix |
+| K9 | Frontend consumes only endpoints the backend exposes | §9.4 "consumes only the endpoints in §5/§9" | **PASS** (static) | Every `API.*`/`location.href` call (robots, current-robot, poses, sequences, steps, duplicate, reorder, groups, preview, export) matches a route in `GET /openapi.json`; cross-checked all 19 paths |
+| K10 | Frontend never persists locally / never computes authoritative pulse widths | §9.4 | **PASS** (static) | No `localStorage`/`indexedDB`; pulse widths only rendered from backend `pulse_us` |
+| K11 | Browser interaction is not automated in this environment | stage instruction | **NOTE** | Play/pause/scrub and canvas rendering were reviewed statically only; not exercised by a browser automation tool |
+
+## Result tally (enhancement pass)
+
+- **Total checks (enhancement pass):** 86
+- **PASS:** 85
+- **FAIL:** 1 (G7 — preview `speed_deg_per_s` stale after a step mutation)
+- Checks not performed: full browser interaction (no headless browser in this
+  environment); frontend behavior was statically reviewed and is labeled as such.
+- **v0.1 regression:** none found (all earlier sections unchanged; section J
+  re-confirms the no-regression constraint).
+
+## Failures (enhancement pass)
+
+**G7 — Stored step `speed` / preview `speed_deg_per_s` is not recomputed after a
+step mutation changes the step's resolved travel.**
+Evidence: In a sequence, after appending a step, a later structural change was
+made by inserting another step earlier in the order. The backend derives each
+step's `speed` from its resolved travel **at save time** (§9.2.2) but does not
+recompute the `speed` of existing steps when an insert (or delete/reorder)
+changes the `from_angle` context of those steps. Concretely:
+- Steps: `[servo→10 (300ms), servo→-20 (400ms), pose home (500ms)]`.
+- Pose `home` (servo 5 → 0) originally appended after `servo→10` (travel
+  `|0−10|=10` → `speed 20`).
+- After inserting `servo→-20` between them, the pose's actual travel became
+  `|0−(−20)|=20` over 500ms = **40 deg/s**, but `GET /sequences/{id}/preview`
+  still reports `speed_deg_per_s:20.0` while the same target shows
+  `from_angle:-20 → angle:0`.
+This contradicts brief 04's invariant ("must not store a step with an
+incoherent speed/duration") and makes the preview's `speed_deg_per_s` disagree
+with its own `from_angle→angle`/`duration_ms`. It does **not** affect playback
+or scrubbing (both `motion.js` and the simulator use `duration_ms`/`easing`, not
+`speed`), so it is a metadata/display-consistency defect rather than a timing
+defect. The timeline editor renders the same stale `speed_deg_per_s` from the
+preview document.
+
+## Minor observations (enhancement pass, not failures)
+
+- `POST /api/robots` leaves the current selection unchanged (creation does not
+  auto-select); the frontend `robots.js` auto-selects the new robot as a UX
+  choice, which the architecture explicitly permits.
+- After deleting the current robot, `GET /api/state/current-robot` returns
+  `robot_id:null` (FK `SET NULL`), matching §9.3.1; `GET /api/poses|sequences`
+  without `?robot_id` then falls back to the lowest remaining robot.
+- `repeat_count` cannot be cleared back to `null` via `PUT` once set (a `null`
+  value is indistinguishable from "not provided"); the frontend clears it by
+  sending `repeat_count:null` + `repeat_forever:false`, which is accepted and
+  yields a "run once" sequence. Minor API ergonomics only.
+- The v0.1 step-list sequence editor (`sequences.js`) remains present alongside
+  the new timeline editor; the architecture (§9.10) treats the timeline as the
+  editing surface, and coexistence is acceptable.
+
+## Scope notes (enhancement pass)
+
+- No code was repaired, redesigned, or extended during this stage.
+- The default `data/app.db` was modified during testing (create/delete of test
+  robots/sequences) and restored to the clean seeded baseline
+  (1 robot, 4 servos, 5 poses, 2 sequences). `data/` is git-ignored.
+- The single FAIL (G7) is left for a future pass/documentation to record; the
+  fix (recompute `speed` of affected steps on step mutation, or derive it during
+  preview instead of storing it) is out of scope for the verification stage.
