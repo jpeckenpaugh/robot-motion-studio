@@ -582,3 +582,434 @@ FastAPI app (backend/app/main.py)
 - **Requirements.txt:** no new runtime deps are required for the backend as
   specified (stdlib `sqlite3`). If Stage 6 adds an ORM/Alembic/pytest, it must
   update `requirements.txt` and `environment-notes.md`.
+
+---
+
+## 9. ENHANCEMENT — Sprint 01: multi-robot, timeline editing, timing, simulation
+
+**Stage 5 — Architect (enhancement pass).**
+**Date:** 2026-09-08
+
+This section is an **addendum** to the v0.1 specification above. It fixes the
+deltas required for the Sprint 01 enhancement pass: multi-robot management
+(brief 01), the door durability tester seed rig (brief 02), the visual timeline
+editor (brief 03), advanced motion timing — per-step speed/easing and
+loop/repeat (brief 04), and motion simulation/preview (brief 05). It does not
+rewrite or remove any v0.1 content; where an enhancement necessarily extends a
+v0.1 structure, the change is described here as a delta and marked. The
+environment is unchanged (Stage 4 confirmed none).
+
+### 9.1 Revision notes on v0.1 assumptions
+
+- v0.1 §3 claimed multi-robot would need "no schema change." That assumption is
+  **superseded**: persisted robot selection and the new timing/loop fields
+  require additive schema changes (§9.2). No v0.1 table or column is removed;
+  all changes are additive.
+- v0.1 §3 "Single current robot (POC)" is replaced by **currently selected
+  robot**: the `robots` collection exists; exactly one robot is current (or
+  none). "The frontend always operates on the current robot" (§3) still holds —
+  the current robot is now the persisted selection.
+- v0.1 seed data (humanoid sample, brief 07) is replaced on **fresh** databases
+  by the door durability tester rig (brief 02). See §9.7.
+
+### 9.2 Data model & schema changes
+
+All changes are additive. DDL below is canonical for **fresh** databases;
+upgraded databases apply the same changes via idempotent `ALTER TABLE`
+(§9.8).
+
+```sql
+-- robots: add description (brief 01) + simulator visualization metadata (brief 05)
+ALTER TABLE robots ADD COLUMN description TEXT NOT NULL DEFAULT '';
+ALTER TABLE robots ADD COLUMN sim_config   TEXT;   -- JSON string, nullable; frontend-interpreted (§9.2.1)
+
+-- sequence_steps: per-step timing (brief 04)
+ALTER TABLE sequence_steps ADD COLUMN speed  REAL;   -- deg/s, nullable (NULL = constant-speed, v0.1) (§9.2.2)
+ALTER TABLE sequence_steps ADD COLUMN easing TEXT NOT NULL DEFAULT 'linear';
+-- fresh DDL adds: CHECK (easing IN ('linear','ease_in','ease_out','ease_in_out'))
+
+-- sequences: whole-sequence loop (brief 04)
+ALTER TABLE sequences ADD COLUMN repeat_count   INTEGER;  -- NULL = run once; >= 1 = finite count
+ALTER TABLE sequences ADD COLUMN repeat_forever INTEGER NOT NULL DEFAULT 0;  -- 0/1; mutually exclusive with repeat_count
+
+-- step groups: loop over a contiguous run of steps (brief 04)
+CREATE TABLE step_groups (
+    id             INTEGER PRIMARY KEY,
+    sequence_id    INTEGER NOT NULL REFERENCES sequences(id) ON DELETE CASCADE,
+    name           TEXT,                        -- optional display label
+    repeat_count   INTEGER,                     -- NULL = run once; >= 1 = finite count
+    repeat_forever INTEGER NOT NULL DEFAULT 0,  -- 0/1; mutually exclusive with repeat_count
+    CHECK (repeat_count IS NULL OR repeat_count >= 1),
+    CHECK (repeat_forever IN (0, 1)),
+    CHECK (repeat_count IS NULL OR repeat_forever = 0)
+);
+
+-- A step belongs to at most one group (PK on step_id). Groups must be contiguous
+-- and non-overlapping; enforced by the backend, not the schema alone.
+CREATE TABLE step_group_members (
+    step_id  INTEGER PRIMARY KEY REFERENCES sequence_steps(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES step_groups(id) ON DELETE CASCADE
+);
+
+-- Single-row app state: persisted robot selection + first-run seed flag.
+CREATE TABLE app_state (
+    id               INTEGER PRIMARY KEY CHECK (id = 1),
+    current_robot_id INTEGER REFERENCES robots(id) ON DELETE SET NULL,
+    seeded           INTEGER NOT NULL DEFAULT 0
+);
+```
+
+#### 9.2.1 `robots.sim_config` (visualization metadata)
+
+`sim_config` is an optional JSON string describing how the simulator renders
+this robot: joint/segment chain order (mapping servo names to joints), segment
+lengths, the wall-mount anchor, and environment primitives (wall, door, handle)
+for the door rig. It is **presentation data**: the backend stores it, validates
+only that it is well-formed JSON when present, and never interprets it. The
+exact JSON shape is defined by the frontend simulator (Stage 7); a suggested
+minimal shape is in §9.6. The door-rig seed ships a populated `sim_config`;
+user-created robots may omit it (the simulator falls back to an abstract
+servo/chain rendering).
+
+#### 9.2.2 Speed semantics (decision)
+
+- Units: degrees/second (deg/s), `REAL`, nullable.
+- `NULL` speed ⇒ constant-speed motion over `duration_ms` — exactly v0.1
+  behavior. This is the migration default and the "no speed set" fallback
+  (brief 04: existing steps keep their meaning).
+- Consistency rule: for a step, `travel_deg` = max over the step's resolved
+  target servos of |`target_angle` − `start_angle`|, where `start_angle` is the
+  servo's resolved angle at the end of the previous step that moved it (or its
+  `neutral_angle` if no prior step moved it). Then
+  `speed = travel_deg / (duration_ms / 1000)`.
+- On save the backend derives the missing value: client sends only
+  `duration_ms` → backend computes and stores `speed`; client sends only
+  `speed` → backend derives `duration_ms = round(travel_deg / speed * 1000)`;
+  client sends both but they disagree beyond tolerance (±0.5% of travel, or
+  0.05 deg/s absolute) → `422` with `code: "SPEED_DURATION_MISMATCH"`. If
+  `travel_deg` is 0 (stationary step), `speed` is stored as `NULL`.
+- Existing rows are backfilled on migration with their derived speed; behavior
+  is unchanged (linear easing + derived speed ≡ constant speed). Speed and
+  easing apply to the movement phase only; holds are unaffected (brief 04).
+
+#### 9.2.3 Easing set (decision)
+
+Canonical, finite set. `linear` is the default and preserves v0.1 behavior:
+`linear`, `ease_in`, `ease_out`, `ease_in_out`. Canonical curves (t = normalized
+elapsed time over the movement phase, p = eased progress):
+
+| easing | p(t) |
+|---|---|
+| linear | p = t |
+| ease_in | p = t³ |
+| ease_out | p = 1 − (1−t)³ |
+| ease_in_out | p = t < 0.5 ? 4t³ : 1 − (−2t+2)³ / 2 |
+
+Backend preview resolution and the frontend simulator/timeline must implement
+exactly these curves so playback, scrub, and preview agree (§9.4). The set may
+be extended additively in the future, never renamed or removed.
+
+#### 9.2.4 Loop semantics (decision)
+
+- **Whole-sequence loop:** `sequences.repeat_count = N` (run the sequence N
+  times) or `repeat_forever = 1` (until stopped). Default: `NULL`/`0` ⇒ once.
+- **Group loop:** `step_groups.repeat_count / repeat_forever`; a group is a
+  contiguous run of steps (by `position`) executed back-to-back the given
+  number of times before the sequence continues after the group. A 1-step group
+  is valid (repeat a single move).
+- **Composition:** within one pass of the sequence, each group runs its own
+  count (including its holds); the sequence-level repeat runs the whole pass
+  (including all group expansions) the given number of times.
+- **Contiguity:** groups must be non-empty, contiguous, and non-overlapping.
+  Any step mutation (reorder, insert, delete, duplicate) revalidates group
+  contiguity; a mutation that would split a group is rejected with
+  `422 code "GROUP_SPLIT"` (the user must move/remove the group first).
+
+### 9.3 API contract changes
+
+All v0.1 endpoint paths and methods are preserved. Changes below are additive:
+new endpoints, new optional fields, and optional query parameters.
+
+#### 9.3.1 Robots & selection (brief 01)
+
+| Method | Path | Purpose | Request body | Response |
+|---|---|---|---|---|
+| GET | `/api/robots` | List robots (now incl. description + current flag) | — | `[{ "id", "name", "description", "servo_count", "current" }]` |
+| POST | `/api/robots` | Create robot | `{ "name", "description" }` | Robot (201) |
+| GET | `/api/robots/{robot_id}` | Full robot incl. servos | — | Robot (§5.1.1 + `description`) |
+| PATCH | `/api/robots/{robot_id}` | Update name and/or description (≥1 field) | `{ "name"?, "description"? }` | Robot |
+| DELETE | `/api/robots/{robot_id}` | Delete robot; cascades its poses + sequences; clears current selection if it was current | — | `204` |
+| GET | `/api/state/current-robot` | Read persisted current selection | — | `{ "robot_id": 1 \| null, "robot": {…} \| null }` |
+| PUT | `/api/state/current-robot` | Set current robot | `{ "robot_id": N }` | `{ "robot_id": N }` (200); `404` if unknown |
+
+Notes:
+- `GET /api/robots` derives `"current": true` on exactly one row from
+  `app_state.current_robot_id`.
+- `POST /api/robots` requires `name` (non-empty) and `description` (present; may
+  be an empty string). Creation does **not** change the current selection; the
+  frontend may auto-select after create as a UX choice.
+- `DELETE /api/robots/{robot_id}` removes the robot and, via FK cascades, its
+  poses, pose targets, sequences, steps, and step groups. Because poses and
+  sequences belong to that robot and nothing else may reference it, no `409`
+  path exists at the robot level. If the deleted robot was current,
+  `current_robot_id` becomes `NULL` (FK `ON DELETE SET NULL`); the frontend
+  responds by selecting the first remaining robot or showing an empty state.
+
+#### 9.3.2 Pose & sequence scoping (brief 01)
+
+- `GET /api/poses`, `POST /api/poses`, `GET /api/sequences`, and
+  `POST /api/sequences` operate on the **currently selected robot** by default
+  and accept an optional `?robot_id=` query parameter for explicit scoping.
+  Omitted ⇒ current robot. Responses are always scoped to one robot.
+- v0.1 paths/methods are unchanged; this preserves the v0.1 single-robot
+  behavior (that robot is now the selected robot).
+- Cross-robot reference integrity is enforced server-side: a pose target's
+  `servo_id` must belong to the pose's robot; a step's `pose_id`/`servo_id`
+  must belong to the sequence's robot. Violations return `422`.
+
+#### 9.3.3 Steps: timing, insert-at-position, duplicate (briefs 03/04)
+
+`StepInput` gains optional fields:
+- `position` (int, 0-based): insert at this position, shifting later steps
+  (renumbering); omitted ⇒ append at end (v0.1 behavior).
+- `speed` (REAL deg/s) and `easing` (enum per §9.2.2–9.2.3). Omitted or `null`
+  ⇒ derived / `linear` respectively (v0.1 behavior).
+
+The Step object gains `speed` and `easing`.
+
+New endpoint (brief 03):
+
+| Method | Path | Purpose | Request body | Response |
+|---|---|---|---|---|
+| POST | `/api/sequences/{seq_id}/steps/{step_id}/duplicate` | Copy a step adjacent to the original (position+1, shifting later steps); copy carries target, timing, speed, easing | — | Step (201) |
+
+#### 9.3.4 Sequence loop fields (brief 04)
+
+- The Sequence object gains `repeat_count`, `repeat_forever`, and `groups`
+  (list of Group objects).
+- `PUT /api/sequences/{seq_id}` accepts `{ "name"?, "repeat_count"?,
+  "repeat_forever"? }` (≥1 field).
+
+#### 9.3.5 Step groups (brief 04)
+
+| Method | Path | Purpose | Request body | Response |
+|---|---|---|---|---|
+| POST | `/api/sequences/{seq_id}/groups` | Create group over contiguous steps | `{ "name"?, "step_ids": [...], "repeat_count"?, "repeat_forever"? }` | Group (201) |
+| GET | `/api/sequences/{seq_id}/groups/{group_id}` | Get one group | — | Group |
+| PUT | `/api/sequences/{seq_id}/groups/{group_id}` | Update name and/or repeat fields | `{ "name"?, "repeat_count"?, "repeat_forever"? }` | Group |
+| DELETE | `/api/sequences/{seq_id}/groups/{group_id}` | Remove group (its steps remain) | — | `204` |
+
+Group object:
+
+```json
+{
+  "id": 1, "sequence_id": 1, "name": "grip_and_open",
+  "step_ids": [4, 5], "repeat_count": 5, "repeat_forever": 0
+}
+```
+
+Validation: `step_ids` non-empty, all in the sequence, contiguous by `position`,
+non-overlapping with other groups. Contiguity is revalidated on every step
+mutation; a split-producing mutation returns `422` `GROUP_SPLIT` (§9.2.4).
+
+#### 9.3.6 Preview — extended, and the single resolved motion source (briefs 03/04/05)
+
+`GET /api/sequences/{seq_id}/preview` remains the read-only, resolved view and
+**becomes the data source for both the read-only preview and the simulator.**
+The v0.1 document shape is preserved; additive fields:
+
+- Per step: `easing`, `speed_deg_per_s` (resolved effective values), per-target
+  `from_angle` / `from_pulse_us` (resolved start position carried through prior
+  steps; first mover of a servo ⇒ its `neutral_angle`), and `start_ms` /
+  `end_ms` (absolute time from pass start, `end_ms = start_ms + duration_ms`;
+  the hold, when present, extends past `end_ms`).
+- Sequence-level: `repeat_count`, `repeat_forever`, `groups` (with
+  `step_orders` using 0-based `order` plus repeat fields), `pass_duration_ms`
+  (single pass including all group expansions), and `total_duration_ms`
+  (`pass_duration_ms * repeat_count`, or `null` when `repeat_forever`).
+
+Example extended step:
+
+```json
+{
+  "order": 2, "kind": "pose", "pose_id": 3, "pose_name": "reach_handle",
+  "start_ms": 1200, "end_ms": 1700, "hold_ms": 250,
+  "easing": "ease_out", "speed_deg_per_s": 42.0,
+  "targets": [
+    { "servo_id": 1, "servo_name": "shoulder",
+      "from_angle": 30.0, "from_pulse_us": 833,
+      "angle": 60.0, "pulse_us": 1250 }
+  ]
+}
+```
+
+The read-only preview UI renders this document statically (v0.1 behavior,
+unchanged). The simulator and timeline playback animate the same document. For
+**unsaved draft playback** the timeline editor may build an equivalent local
+model from in-memory edits using the canonical rules in §9.2.2–9.2.4; saved
+state always re-syncs from `/preview` (brief 05: "reflected when reopened or
+re-synced").
+
+#### 9.3.7 Export (briefs 01/04/05)
+
+- Export endpoints are unchanged in path/method and operate on the **currently
+  selected robot** (decision recorded here: v0.1 exported the single robot; the
+  selected robot is its successor). Both accept an optional `?robot_id=` for
+  explicit scope.
+- `schema_version` bumps to `2`. Additive fields: robot `description`; per-step
+  `easing` and `speed_deg_per_s`; sequence `repeat_count` / `repeat_forever`;
+  and `groups` exported as
+  `[ { "name", "step_orders": [0,1,2], "repeat_count", "repeat_forever" } ]`
+  using 0-based step order. All v0.1 export fields and shape are unchanged
+  (pose references still resolved to concrete `{ servo_id, servo_name, angle,
+  pulse_us }` targets; no app-only implementation details added).
+
+### 9.4 Backend vs frontend responsibility changes
+
+**Backend (Stage 6) adds:**
+
+- Robots CRUD + `description`; `app_state` persistence; current-robot endpoints;
+  seed-once logic (§9.7); idempotent migration of upgraded databases (§9.8).
+- New validation: speed/duration consistency, easing enum, loop/group rules,
+  group contiguity, cross-robot reference integrity (§9.2, §9.3).
+- Preview resolution extended: carry-through `from_angle`, `start_ms/end_ms`,
+  pass/total durations, loop descriptors — the authoritative resolved motion
+  document consumed by simulator and timeline.
+- Export v2 with timing/loop fields.
+
+**Frontend (Stage 7) adds:**
+
+- Robot collection UI (create/select/edit/delete with confirmation dialog that
+  warns poses/sequences are removed); current robot always visible; switching
+  robots reloads servos, poses, sequences, preview, and simulator context.
+- Visual timeline editor: timeline with step extents from durations/holds;
+  add at any point, reorder, edit, remove, duplicate; play/pause/scrub with
+  timing-accurate playhead; per-step speed/easing controls; sequence/group loop
+  controls; group-split and invalid-step errors surfaced.
+- **Shared motion module `frontend/js/motion.js`:** canonical easing math,
+  speed/duration resolution for drafts, and elapsed-time→pose mapping honoring
+  holds, easing, speed, and loops. Used by **both** the timeline editor
+  playback and the simulator so they cannot diverge. Backend `/preview` is
+  authoritative for saved data; `motion.js` animates the resolved preview
+  document and builds drafts for unsaved edits.
+- **Simulator renderer** (`frontend/js/simulator/`): Canvas-based, no new
+  dependencies, no build step (Stage 4). Renders servos/links from the robot
+  config + `sim_config` (wall/door/handle for the door rig); play/pause/scrub
+  against the preview document; read-only with respect to the sequence.
+
+**Unchanged responsibilities:** backend remains the enforcement point and sole
+persister; the frontend never persists, never computes authoritative pulse
+widths, and never weakens validation. Client-side checks remain UX conveniences.
+
+### 9.5 Component interaction & state flow
+
+- **Active robot:** `app_state.current_robot_id` (server-persisted, so it
+  survives reloads — brief 01). The frontend loads it on startup
+  (`GET /api/state/current-robot`), holds it in view state, and every
+  robot-scoped capability (configuration, poses, sequences, preview, export,
+  timeline, simulator) operates against it. Switching robots =
+  `PUT /api/state/current-robot` + full view-state refresh.
+- **Delete current robot:** backend sets `current_robot_id` to `NULL`
+  (FK `SET NULL`); the frontend selects the first remaining robot or shows an
+  empty state.
+- **Mutation → refresh** pattern is unchanged (v0.1 §4): API call → update view
+  state from response → re-render. Persistence remains immediate (no save step).
+- **Simulator data flow:** open/simulate → fetch robot
+  (`GET /api/robots/{robot_id}`, incl. servos + `sim_config`) and sequence
+  (`GET /api/sequences/{seq_id}/preview`) → animate with `motion.js`. Re-sync
+  after a sequence edit save or on reopen, matching brief 05.
+- **Timeline editor:** edits build a local draft resolved model (via
+  `motion.js`) for live playback/scrub; save via the step/sequence/group
+  endpoints; after save the editor, read-only preview, and simulator all
+  re-sync to the same saved data (preview is re-requested on sequence/pose/
+  config change, as v0.1).
+
+### 9.6 `sim_config` — suggested minimal shape (behavioral only, frontend-defined)
+
+```json
+{
+  "kind": "arm-chain",
+  "anchor": { "x": 0, "y": 0, "z": 0 },
+  "joints": [ { "servo_name": "shoulder", "segment_len": 40 },
+              { "servo_name": "elbow",    "segment_len": 35 },
+              { "servo_name": "wrist",    "segment_len": 12 } ],
+  "gripper": { "servo_name": "gripper", "jaw_len": 8 },
+  "environment": { "wall": { }, "door": { }, "handle": { } }
+}
+```
+
+The backend does not interpret this; it stores/validates well-formed JSON and
+ships it for the door-rig seed. The exact structure is finalized by Stage 7.
+
+### 9.7 Seed rig content contract (brief 02)
+
+- **Fresh DB:** on first startup, if `app_state.seeded = 0`, seed exactly one
+  robot — the door durability tester rig — including a populated `sim_config`,
+  then set `seeded = 1`. Never re-seed after the user deletes it (seeded stays
+  1), even if the robots table becomes empty.
+- **Upgraded v0.1 DB:** set `seeded = 1` without seeding and leave existing
+  data untouched (the v0.1 sample robot remains; it may have been edited).
+  Flagged: brief 02's "replace the existing sample" applies to fresh databases;
+  existing user data is never deleted.
+- **Content shape (concrete values authored by Stage 6 and flagged):** one
+  robot with 4–6 servos representing the four arm elements — shoulder/pivot,
+  elbow, wrist twist, gripper — each with complete calibration within limits; a
+  few named poses (e.g. rest, reach_handle, grip_handle, door_open, door_closed)
+  within the servos' limits; one or more example sequences whose steps reference
+  those poses/servos with valid durations/holds and demonstrate the door
+  open/close cycle, using group or sequence loop/repeat to show many cycles.
+- Seed data is normal, editable, deletable data; nothing marks it read-only or
+  undeletable (briefs 02 and 07).
+
+### 9.8 Migration & compatibility
+
+- **Upgraded DB:** idempotent additive migration — `ALTER TABLE` for
+  `robots.description`, `robots.sim_config`, `sequence_steps.speed`,
+  `sequence_steps.easing`, `sequences.repeat_count`, `sequences.repeat_forever`;
+  create `step_groups`, `step_group_members`, `app_state`; set `seeded = 1` and
+  `current_robot_id` = the lowest robot id; backfill derived `speed` on existing
+  steps (existing rows keep v0.1 meaning: linear easing, no loops).
+  New CHECK constraints are enforced in code for upgraded DBs (SQLite cannot add
+  `CHECK` via `ALTER TABLE`).
+- **Fresh DB:** full DDL including the new `CHECK` constraints + seed rig
+  (§9.7).
+- Migration is idempotent (column-presence checks or `PRAGMA user_version`).
+- No environment changes; no new dependencies; no frontend build toolchain
+  (Stage 4 confirmed).
+
+### 9.9 Explicitly unchanged / out of scope
+
+- All v0.1 endpoint paths and methods remain; every change in §9.3 is additive
+  (new optional fields, optional query parameters, new endpoints).
+- v0.1 capabilities keep working on the selected robot: pose management,
+  read-only sequence preview, immediate local persistence (no save step),
+  structured JSON export (extended additively), and deletion guards (servo/pose
+  reference rules unchanged and not weakened).
+- No hardware control, no Arduino/serial, no real-time robot control, no
+  autonomous behavior, no sensors. Playback and simulation are visual only.
+- No multi-user, no authentication; the app remains a local, single-user web
+  app.
+- No environment/dependency changes beyond the v0.1 `run.sh` PYTHONPATH
+  adjustment already recorded in §1.
+- The simulator never edits the sequence; editing happens in the timeline
+  editor only.
+
+### 9.10 Open items for downstream stages
+
+- **Concrete seed content** (names/values/`sim_config` geometry) is authored by
+  Stage 6 and flagged, per §9.7.
+- **`sim_config` exact JSON schema** is frontend-defined but must be agreed
+  before Stage 6/7 so the door-rig seed carries the visuals the simulator
+  renders; §9.6 gives a suggested shape.
+- **Speed units (deg/s) and consistency tolerance** are decided in §9.2.2;
+  confirm they match product intent before implementation.
+- **"Run continuously" (`repeat_forever`)** is exported as `repeat_forever:
+  true` with `repeat_count: null`; interpretation by downstream firmware
+  consumers is left open.
+- **Timeline editor vs. step-list surface:** this spec decides the timeline
+  becomes the sequence editing surface and the read-only preview remains the
+  static inspection surface (the v0.1 raw step-list editing form is superseded).
+  Confirm with product before Stage 7 UI work.
+- **Draft-vs-saved resolution:** `motion.js`'s draft resolver must mirror the
+  backend preview rules exactly (canonical easing/speed/carry/loop semantics
+  defined in §9.2) to avoid divergence between unsaved playback and saved state.
