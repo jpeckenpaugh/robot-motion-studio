@@ -9,10 +9,11 @@
 
   const VIEW = 'export';
 
-  function render(container) {
+  async function render(container) {
     container.innerHTML =
-      '<div class="row"><div class="col-lg-8">' +
       '<h4 class="mb-3">Export</h4>' +
+      '<div class="row g-3">' +
+      '<div class="col-lg-6">' +
       '<div class="card mb-3"><div class="card-body">' +
       '<h5 class="card-title"><i class="bi bi-download me-2"></i>Full export</h5>' +
       '<p class="text-muted">Download a self-contained JSON document of the ' +
@@ -35,9 +36,30 @@
       '<button class="btn btn-outline-primary" id="btnSeqExport" disabled>Download</button>' +
       '</div>' +
       '</div></div>' +
-      '</div></div>';
+      '</div>' +
+
+      '<div class="col-lg-6">' +
+      '<div class="card bg-dark text-light border-0 shadow-sm">' +
+      '<div class="card-header bg-black text-secondary py-2 d-flex justify-content-between align-items-center">' +
+      '<span class="fw-semibold text-uppercase small text-light"><i class="bi bi-code-slash me-2 text-primary"></i>Schema v2 Motion Document</span>' +
+      '<span class="badge text-bg-primary">schema_version: 2</span>' +
+      '</div>' +
+      '<div class="card-body p-3" style="max-height: 480px; overflow-y: auto;">' +
+      '<pre class="m-0 text-info small" style="white-space: pre-wrap; font-size: 0.76rem; font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;" id="exportCodeBlock">Loading export schema\u2026</pre>' +
+      '</div>' +
+      '</div></div>' +
+      '</div>';
 
     bind(container);
+
+    try {
+      const res = await API.get('/export');
+      const doc = res && res.doc ? res.doc : res;
+      const block = container.querySelector('#exportCodeBlock');
+      if (block && doc) {
+        block.textContent = JSON.stringify(doc, null, 2);
+      }
+    } catch (_) {}
   }
 
   function bind(container) {
