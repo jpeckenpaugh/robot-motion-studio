@@ -30,6 +30,7 @@ jobs:
         run: |
           mkdir -p _site
           cp browser-edition/index.html _site/
+          cp browser-edition/favicon.ico _site/ 2>/dev/null || true
           cp -R browser-edition/css browser-edition/js browser-edition/vendor _site/
           touch _site/.nojekyll
 
